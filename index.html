@@ -3470,7 +3470,7 @@ const Usuarios=(function(){
     lista=leer();
     Almacen.fijarGuardia(guardia);
     // con una sesión de la nube guardada en el equipo se entra directo
-    if(window.Nube){try{if(await Nube.arranque){cerrarPantalla();return;}}catch(e){}}
+    if(window.Nube){try{const r=await Nube.arranque;if(r){if(r===true)cerrarPantalla();return;}}catch(e){}}
     if(!lista.length){
       // versión web (celular, tablet, navegador): lo normal es entrar con la cuenta de la nube
       if(window.Nube&&!window.escritorio&&/^https?:$/.test(location.protocol))Nube.pantallaLogin(pantallaCrearAdmin);
@@ -9913,6 +9913,9 @@ window.InformeMensual=InformeMensual;
     clave:'sb_publishable_7gbxBtY5xVJt9jBtH4m9Iw_YgXETM15'
   };
   const M=window.NubeMotor;
+  const WEB='https://josuedavidchoezamora-arch.github.io/construction-control/';
+  // ¿se abrió la app desde el enlace «Reset password» del correo? (Supabase agrega #...type=recovery)
+  const vieneDeRecuperacion=/type=recovery/.test(location.hash)||/type=recovery/.test(location.search);
   const K_BASE='nube_base_', K_CACHE='cc_nube_cache';
   const PUESTOS={admin:'Administrador',fiscalizador:'Fiscalizador',residente:'Residente de obra',consulta:'Consulta / Oficina'};
   const $=id=>document.getElementById(id);
@@ -9969,6 +9972,7 @@ window.InformeMensual=InformeMensual;
     sb.auth.onAuthStateChange((ev,ses)=>{
       if(ev==='SIGNED_OUT'&&usuario){usuario=null;detener();}
       if(ev==='TOKEN_REFRESHED'&&ses&&sb.realtime)sb.realtime.setAuth(ses.access_token);
+      if(ev==='PASSWORD_RECOVERY'&&ses)setTimeout(()=>pantallaNuevaClave(ses.user),50);
     });
     return sb;
   }
@@ -10018,6 +10022,8 @@ window.InformeMensual=InformeMensual;
     try{
       const {data}=await sb.auth.getSession();
       if(!data||!data.session)return false;
+      // desde el enlace del correo: primero se pone la contraseña nueva, después se entra
+      if(vieneDeRecuperacion){pantallaNuevaClave(data.session.user);return 'recuperando';}
       await empezar(data.session.user,navigator.onLine!==false);
       return true;
     }catch(e){console.warn('Nube: no se pudo restaurar la sesión',e);return false;}
@@ -10460,38 +10466,50 @@ window.InformeMensual=InformeMensual;
     };
     $('nc-ok').onclick=ok;el.querySelectorAll('input').forEach(i=>i.onkeydown=e=>{if(e.key==='Enter')ok();});
   }
-  // Recuperar contraseña: Supabase envía un código de 6 dígitos al correo
+  // Recuperar contraseña: Supabase envía un correo con el enlace «Reset password».
+  // El enlace abre Construction Control en la web, que pide la contraseña nueva (sirve en cualquier equipo o celular).
   function pantallaRecuperar(){
-    const el=pantalla('<h2>Recuperar contraseña</h2><p class="acceso-txt">Te enviaremos un código de 6 dígitos a tu correo.</p>'+
-      campo('nr-correo','Correo','email','maxlength="120"')+'<div class="acceso-err" id="nr-err"></div>'+
-      '<button class="btn btn-blue acceso-btn" id="nr-enviar">Enviar código</button>'+
-      '<div id="nr-paso2" hidden>'+campo('nr-codigo','Código del correo','text','inputmode="numeric" maxlength="10" autocomplete="one-time-code"')+
-      campo('nr-c1','Nueva contraseña (mínimo 8)','password','autocomplete="new-password"')+campo('nr-c2','Repítela','password','autocomplete="new-password"')+
-      '<button class="btn btn-blue acceso-btn" id="nr-ok">Cambiar contraseña</button></div>'+
+    const el=pantalla('<h2>Recuperar contraseña</h2><p class="acceso-txt">Te enviaremos un correo con un enlace. Ábrelo en este equipo o en tu celular: '+
+      'se abrirá Construction Control para que pongas tu contraseña nueva.</p>'+
+      campo('nr-correo','Correo','email','maxlength="120" autocomplete="username"')+'<div class="acceso-err" id="nr-err"></div>'+
+      '<button class="btn btn-blue acceso-btn" id="nr-enviar">Enviar enlace</button>'+
+      '<p class="acceso-txt" id="nr-ok" hidden></p>'+
       '<p class="acceso-txt acceso-pie"><button type="button" class="hs-link" id="nr-volver">Volver</button></p>');
     try{$('nr-correo').value=localStorage.getItem('cc_nube_ultimo_correo')||'';}catch(e){}
     const err=t=>{$('nr-err').textContent=t;};
     $('nr-volver').onclick=()=>pantallaLogin();
     $('nr-enviar').onclick=async()=>{
-      const c=$('nr-correo').value.trim();if(!c)return err('Escribe tu correo.');
-      $('nr-enviar').disabled=true;
-      const {error}=await cliente().auth.resetPasswordForEmail(c);
+      const c=$('nr-correo').value.trim();if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c))return err('Escribe tu correo.');
+      $('nr-enviar').disabled=true;err('');
+      const {error}=await cliente().auth.resetPasswordForEmail(c,{redirectTo:WEB});
       $('nr-enviar').disabled=false;
-      if(error)return err(texto(error));
-      err('');$('nr-paso2').hidden=false;$('nr-enviar').textContent='Reenviar código';agregarVerClave(el);$('nr-codigo').focus();
+      if(error)return err(/rate|limit|seconds/i.test(error.message)?'Ya se envió un correo hace poco. Espera unos minutos y vuelve a intentarlo.':texto(error));
+      const ok=$('nr-ok');ok.hidden=false;
+      ok.innerHTML='✓ Listo. Revisa tu correo <b>'+esc(c)+'</b> (también la carpeta de spam) y pulsa <b>«Reset password»</b>.';
+      $('nr-enviar').textContent='Reenviar enlace';
     };
-    $('nr-ok').onclick=async()=>{
-      const c=$('nr-correo').value.trim(),cod=$('nr-codigo').value.replace(/\s/g,''),c1=$('nr-c1').value,c2=$('nr-c2').value;
+  }
+  // Pantalla a la que llega el enlace del correo
+  function pantallaNuevaClave(user){
+    if($('nc2-c1'))return;   // ya está a la vista
+    const el=pantalla('<h2>Nueva contraseña</h2><p class="acceso-txt">Cuenta: <b>'+esc(user&&user.email||'')+'</b>. Escribe tu contraseña nueva.</p>'+
+      campo('nc2-c1','Nueva contraseña (mínimo 8)','password','autocomplete="new-password"')+campo('nc2-c2','Repítela','password','autocomplete="new-password"')+
+      '<div class="acceso-err" id="nc2-err"></div><button class="btn btn-blue acceso-btn" id="nc2-ok">Guardar y entrar</button>');
+    const err=t=>{$('nc2-err').textContent=t;};
+    const ok=async()=>{
+      const c1=$('nc2-c1').value,c2=$('nc2-c2').value;
       if(c1.length<8)return err('La contraseña debe tener al menos 8 caracteres.');
       if(c1!==c2)return err('Las contraseñas no coinciden.');
-      $('nr-ok').disabled=true;
+      $('nc2-ok').disabled=true;
       try{
-        const v=await sb.auth.verifyOtp({email:c,token:cod,type:'recovery'});if(v.error)throw new Error('Código incorrecto o vencido.');
         const u=await sb.auth.updateUser({password:c1});if(u.error)throw u.error;
         await sb.rpc('clave_cambiada');
-        await empezar(v.data.user,true);el.hidden=true;el.innerHTML='';toast('Contraseña cambiada ✓');
-      }catch(e){err(texto(e));$('nr-ok').disabled=false;}
+        try{history.replaceState(null,'',location.pathname);}catch(e){}   // se quita el enlace de la barra de direcciones
+        await empezar(u.data.user||user,true);el.hidden=true;el.innerHTML='';
+        auditar('Recuperó su contraseña','');toast('Contraseña cambiada ✓');
+      }catch(e){err(/same|different/i.test(texto(e))?'La contraseña nueva debe ser distinta de la anterior.':texto(e));$('nc2-ok').disabled=false;}
     };
+    $('nc2-ok').onclick=ok;el.querySelectorAll('input').forEach(i=>i.onkeydown=e=>{if(e.key==='Enter')ok();});
   }
   async function cambiarClave(obligatorio){
     const c1=await pedirTexto(obligatorio?'Tu contraseña es temporal: escribe una nueva (mínimo 8)':'Nueva contraseña (mínimo 8)',{tipo:'password'});
